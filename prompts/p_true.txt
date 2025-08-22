@@ -1,0 +1,7 @@
+Statement: {query}
+
+Is the statement:
+(A) True
+(B) False
+
+Answer: 

@@ -1,0 +1,4 @@
+Provide the probability that the given statement is correct. The final answer MUST be a single value between 0.00 and 1.00. Do not output any commentary before the final answer.
+
+Statement: {query}
+Answer: 

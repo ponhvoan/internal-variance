@@ -1,0 +1,4 @@
+Determine whether the given statement is TRUE or FALSE. The Final Answer must only be either 'TRUE.' or 'FALSE.' only. 
+
+Statement: {query}
+Let's think step-by-step. 
