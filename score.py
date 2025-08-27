@@ -182,45 +182,33 @@ class VarianceScore(CoEScore):
 # Adapted from https://github.com/Alsace08/Chain-of-Embedding/blob/master/score.py
 class OutputScore():
     def __init__(self, logits):
-        self.output_scores = logits
-        self.all_token_re = []
-        self.all_token_max_re = []
-        for token in range(len(self.output_scores)):
-            re = self.output_scores[token][0].tolist()
-            re = F.softmax(torch.tensor(re).to(device), 0).cpu().tolist()
-            self.all_token_re.append(re)
-            self.all_token_max_re.append(max(re))
-
-    def _stack_logits(self):
-        return torch.stack(
-            [torch.as_tensor(self.output_scores[t][0], device=device, dtype=torch.float32)
-             for t in range(len(self.output_scores))],
+        self.logits = torch.stack(
+            [torch.as_tensor(logits[t][0], device=device, dtype=torch.float32)
+             for t in range(len(logits))],
             dim=0
         )
+        self.probs = F.softmax(self.logits, dim=1)
         
     def compute_maxprob(self):
-        seq_prob_list = self.all_token_max_re
-        max_prob = np.mean(seq_prob_list)
+        max_prob = torch.mean(torch.max(self.probs, dim=1)[0]).item()
         return max_prob
 
     def compute_ppl(self):
-        seq_ppl_list = [math.log(max_re) for max_re in self.all_token_max_re]
-        ppl = -np.mean(seq_ppl_list)
+        seq_ppl = torch.log(torch.clip(torch.max(self.probs, dim=1)[0], min=1e-8))
+        ppl = -torch.mean(seq_ppl).item()
         return ppl
 
     def compute_entropy(self):
-        seq_entropy_list = [entropy(re, base=2) for re in self.all_token_re]
-        seq_entropy = np.mean(seq_entropy_list)
+        seq_entropy = torch.sum(-self.probs * torch.log(torch.clip(self.probs, min=1e-8)), dim=1)
+        seq_entropy = torch.mean(seq_entropy).item()
         return seq_entropy
     
     def compute_tempscale(self, temperature = 0.7):
-        logits = self._stack_logits()
-        probs = F.softmax(logits / temperature, dim=-1)
+        probs = F.softmax(self.logits / temperature, dim=-1)
         max_scaled_prob = probs.max(dim=-1).values.mean().item()
         return max_scaled_prob
     
     def compute_energy(self, temperature=0.7):
-        logits = self._stack_logits()
-        energy_per_token = -temperature * torch.logsumexp(logits / temperature, dim=-1)
+        energy_per_token = -temperature * torch.logsumexp(self.logits / temperature, dim=-1)
         return float(energy_per_token.mean().item())
     
