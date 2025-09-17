@@ -1,0 +1,8 @@
+Answer the following multiple choice medical question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step and output the reasoning process before answering.
+
+{query}
+
+A: {opa}
+B: {opb}
+C: {opc}
+D: {opd}
