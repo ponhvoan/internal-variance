@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from datasets import load_dataset, Value
-
+import evaluate
 
 class SequenceDataset(Dataset):
     def __init__(self, sequences: List[Sequence[float]], labels):
@@ -62,30 +62,31 @@ def binarize(batch):
 def format_qa(question, choice):
     return f"Q: {question} A: {choice}"
 
-def format_prompt(dataset_name, dataset, prompt_type=None): 
+def format_prompt(dataset_name, dataset):
+    if dataset_name in ['true_false', 'halueval', 'fever']:
+        prompt_type = 'fact'
+    else:
+        prompt_type = dataset_name
     all_prompts = []
-    all_labels = []
+    all_gt = []
     if dataset_name == 'halueval':
         for i in range(len(dataset)):
             responses= dataset[i]['chatgpt_fact']
-            labels = dataset[i]['human_judge']
+            gts = dataset[i]['human_judge']
             
-            if len(responses) == len(labels):
+            if len(responses) == len(gts):
                 for j in range(len(responses)): 
                     choice = responses[j]
-                    label = labels[j]
-                    if prompt_type is None:
-                        prompt = choice
-                    else:
-                        with open(f'prompts/{prompt_type}.txt', 'r', encoding='utf-8') as f:
-                            prompt = f.read()
-                        prompt = prompt.format(query=choice)
+                    gt = gts[j]
+                    with open(f'prompts/{prompt_type}.txt', 'r', encoding='utf-8') as f:
+                        prompt = f.read()
+                    prompt = prompt.format(query=choice)
                     all_prompts.append(prompt)
-                    all_labels.append(label)
+                    all_gt.append(gt)
         
     elif dataset_name in ['true_false', 'mmlu', 'commonsenseqa', 'math', 'fever']:
         for i in range(len(dataset)):
-            label = dataset[i]['answer']
+            gt = dataset[i]['answer']
             query= dataset[i]['question']
             if prompt_type is None:
                 prompt = query
@@ -94,14 +95,14 @@ def format_prompt(dataset_name, dataset, prompt_type=None):
                     prompt = f.read()
             prompt = prompt.format(query=query)
             all_prompts.append(prompt)
-            all_labels.append(label)
+            all_gt.append(gt)
     
     elif dataset_name=='gsm':
         languages = ['bn', 'en', 'ja', 'th']
         for lang in languages:
             for i in range(len(dataset)):
-                label = dataset[i]['answer']
-                query= dataset[i][lang]
+                gt = dataset[i]['answer']
+                query = dataset[i][lang]
                 if prompt_type is None:
                     prompt = query
                 else:
@@ -109,17 +110,42 @@ def format_prompt(dataset_name, dataset, prompt_type=None):
                         prompt = f.read()
                 prompt = prompt.format(query=query)
                 all_prompts.append(prompt)
-                all_labels.append(label)
+                all_gt.append(gt)
     
-    return all_prompts, all_labels
+    elif dataset_name=='trivia':
+        for i in range(len(dataset)):
+            gt = dataset[i]['answer']['value']
+            query = dataset[i]['question'] + ' Be concise, and output only the final answer.\n'
+            all_prompts.append(query)
+            all_gt.append(gt)
+            
+    elif dataset_name=='sciq':
+        for i in range(len(dataset)):
+            gt = dataset[i]['correct_answer']
+            query = dataset[i]['question'] + ' Be concise, and output only the final answer.\n'
+            all_prompts.append(query)
+            all_gt.append(gt)
+            
+    elif dataset_name=='medmcqa':
+        for i in range(len(dataset)):
+            gt = dataset[i]['cop']
+            query= dataset[i]['question']
+        
+            with open(f'prompts/{prompt_type}.txt', 'r', encoding='utf-8') as f:
+                prompt = f.read()
+            prompt = prompt.format(query=query, opa=dataset[i]['opa'],
+                                   opb=dataset[i]['opb'], opc=dataset[i]['opc'], opd=dataset[i]['opd'])
+            all_prompts.append(prompt)
+            all_gt.append(gt)
+    return all_prompts, all_gt
 
-def prepare_dataset(dataset_name, topic):
+def prepare_dataset(dataset_name, subdataset):
     
     if dataset_name == 'halueval':
-        dataset = load_dataset('json', data_files=f'data/halueval_data/{topic}.json')['train']
+        dataset = load_dataset('json', data_files=f'data/halueval_data/{subdataset}.json')['train']
         dataset = dataset.map(lambda x: {"human_judge": [1 if val.lower() == "true" else 0 for val in x["human_judge"]]})
     elif dataset_name == 'true_false':
-        dataset = load_dataset('csv', data_files=f'data/true_false_data/{topic}.csv')['train']
+        dataset = load_dataset('csv', data_files=f'data/true_false_data/{subdataset}.csv')['train']
         dataset = dataset.rename_columns({'statement': 'question', 'label': 'answer'})
     elif dataset_name == 'mmlu':
         dataset = load_dataset('cais/mmlu', 'all', split='validation')
@@ -132,7 +158,8 @@ def prepare_dataset(dataset_name, topic):
         dataset = dataset.rename_column('en', 'question')
     elif dataset_name == 'math':
         dataset = load_dataset('json', data_files='data/math.jsonl')['train']
-        dataset = dataset.train_test_split(test_size=0.2, seed=42)['test']
+        dataset = dataset.shuffle(seed=42).select(range(1000))
+        # dataset = dataset.train_test_split(test_size=0.2, seed=42)['test']
         dataset = dataset.rename_column('en', 'question')
     elif dataset_name == 'fever':
         dataset = load_dataset('fever', 'v1.0', trust_remote_code=True)
@@ -143,11 +170,50 @@ def prepare_dataset(dataset_name, topic):
         dataset = dataset.rename_columns({'claim': 'question', 'label': 'answer'})
         dataset = dataset.cast_column('answer', Value('int64'))
         dataset = dataset['labelled_dev'].shuffle(seed=42).select(range(1000))
-
+    elif dataset_name == 'trivia':
+        dataset = load_dataset('mandarjoshi/trivia_qa', 'rc', split='validation')
+        dataset = dataset.shuffle(seed=42).select(range(1000))
+    elif dataset_name == 'sciq':
+        dataset = load_dataset('allenai/sciq', split='test')
+    elif dataset_name == 'medmcqa':
+        dataset = load_dataset('openlifescienceai/medmcqa', split='validation')
+        dataset = dataset.shuffle(seed=42).select(range(1000))
     formatter = format_prompt
     return dataset, formatter 
 
-def extract_answer(answer_txt, dataset_name):
+def load_generations(dataset, args):
+    fp = f"outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
+    fp = fp.replace("/None", "") if "None" in fp else fp
+        
+    statements = []
+    gt = []
+    for i in range(len(dataset)):
+        gt.append(int(dataset[i]['answer']))
+        statements.append(dataset[i]['question'])
+    labels = []
+    prompts = []
+    with open(f"{fp}/responses_cot_zero.jsonl", "r", encoding="utf-8") as f:
+        for i, l in enumerate(f):
+            data = json.loads(l)
+            with open(f'prompts/p_true_f.txt', "r", encoding="utf-8") as f:
+                prompt = f.read()
+            if "true" in data["response"].lower():
+                labels.append(1 if gt[i]==1 else 0)
+                prompt = prompt.format(query=statements[i], answer=data["response"].replace("<|eot_id|>", ""))
+                prompts.append(prompt)
+            elif "false" in data["response"].lower():
+                labels.append(1 if gt[i]==0 else 0)
+                
+                prompt = prompt.format(query=statements[i], answer=data["response"].replace("<|eot_id|>", ""))
+                prompts.append(prompt)
+            else:
+                continue
+    return prompts, labels
+
+def parse_answer(answer_txt, dataset_name):
+    # if "<|im_end|>" not in answer_txt and "<|eot_id|>" not in answer_txt and "</s>" not in answer_txt and "<|END_OF_TURN_TOKEN|>" not in answer_txt:
+    #     return None
+
     if dataset_name in ['true_false', 'halueval', 'fever']:
         if 'true' in answer_txt.lower():
             return 1
@@ -155,10 +221,25 @@ def extract_answer(answer_txt, dataset_name):
             return 0
         else:
             return None
+        # match = re.search(r"(?i)Answer\s*:\s*(True|False)", answer_txt)
+        # if match:
+        #     return match.group(1).lower()
+        # else:
+        #     return None
         
-    elif dataset_name in ['mmlu', 'commonsenseqa']:
-        map = {'a': 0, 'b': 1, 'c': 2, 'd':3} if dataset_name=='mmlu' else {'a': 0, 'b': 1, 'c': 2, 'd':3, 'e':4}
-        match = re.search(r'Answer:\s*([A-Da-d])', answer_txt)
+    elif dataset_name in ['mmlu', 'medmcqa']:
+        map = {'a': 0, 'b': 1, 'c': 2, 'd':3}
+        match = re.search(r"(?i)Answer\s*:\s*([A-D])", answer_txt)
+        if match:
+            key = match.group(1).lower()
+            gen_ans = map[key]
+            return gen_ans
+        else:
+            return None
+    
+    elif dataset_name == 'commonsenseqa':
+        map = {'a': 0, 'b': 1, 'c': 2, 'd':3, 'e':4}
+        match = re.search(r"(?i)Answer\s*:\s*([A-E])", answer_txt)
         if match:
             key = match.group(1).lower()
             gen_ans = map[key]
@@ -167,43 +248,103 @@ def extract_answer(answer_txt, dataset_name):
             return None
         
     elif dataset_name == 'gsm':
-        # match = re.search(r'Answer:\s*(-?\d+(?:\.\d+)?)(?!.*\d)', answer_txt)
-        match = re.search(r'(?:\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?!.*\d)', answer_txt)
+        ANSWER_PREFIX = {
+            "en": "Answer",
+            "bn": "উত্তর",
+            "de": "Antwort",
+            "es": "Respuesta",
+            "fr": "Réponse",
+            "ja": "答え",
+            "ru": "Ответ",
+            "sw": "Jibu",
+            "te": "సమాధానం",
+            "th": "คำตอบ",
+            "zh": "答案",
+        }
+        for _, prefix in ANSWER_PREFIX.items():
+            if prefix in answer_txt:
+                answer_txt = answer_txt.split(prefix)[-1].strip()
+                break
+            else:
+                return None
+        match = re.search(r"\d+\.?\d*", answer_txt.replace(",", ""))
         if match:
             # gen_ans = float(match.group(1))
-            gen_ans = float(match.group().replace(',', ''))
+            gen_ans = float(match.group())
             return gen_ans
         else:
             return None
     
     elif dataset_name == 'math':
-        match = re.search(r"\\boxed\{([^}]*)\}", answer_txt)
-        if match:
-            gen_ans = match.group(1).replace(' ', '')
-            return gen_ans
+        def extract_boxed_content(text):
+            pattern = re.compile(r'\\boxed{')
+            matches = pattern.finditer(text)
+            results = []
+            for match in matches:
+                start_pos = match.end()
+                brace_count = 1
+                i = start_pos
+                while i < len(text) and brace_count > 0:
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                    i += 1
+                if brace_count == 0:
+                    results.append(text[start_pos:i-1])
+            return results
+        extracted_ans = extract_boxed_content(answer_txt)
+        extracted_ans = extracted_ans[0] if extracted_ans else None
+        if extracted_ans:
+            extracted_ans = extracted_ans.replace(" ", "")
+            return extracted_ans
         else:
             return None
+    
+    else:
+        return answer_txt
 
 def append_answer(labels, gen_ans, gt, dataset_name):
-    if dataset_name in ['true_false', 'halueval', 'fever', 'mmlu', 'commonsenseqa']:
+    if dataset_name in ['true_false', 'halueval', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
        labels.append(0 if gen_ans==gt else 1)
     elif dataset_name == 'gsm':
        labels.append(0 if gen_ans==float(gt.replace(',', '').strip()) else 1)
     elif dataset_name == 'math':
         labels.append(0 if gen_ans==gt.replace(' ', '') else 1)
+    elif dataset_name in ['trivia', 'sciq']:
+        rouge = evaluate.load('rouge')
+        rouge_score = rouge.compute(predictions=[gen_ans], references=[gt])['rougeL']
+        threshold = 0.7
+        labels.append(0 if rouge_score > threshold else 1)
     return labels
 
+def extract_labels(dataset_name, gen_ans, ref_ans):
+    if dataset_name in ['true_false', 'halueval', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
+       gen_ans = [1 if 'true' in label.lower() else 0 for label in gen_ans]
+       labels = [0 if ans==ref else 1 for ans, ref in zip(gen_ans, ref_ans)]
+
+    elif dataset_name == 'gsm':
+       labels = [0 if gen==float(gt.replace(',', '').strip()) else 1 for gen, gt in zip(gen_ans, ref_ans)]
+    elif dataset_name == 'math':
+        labels = [0 if gen==gt.replace(' ', '') else 1 for gen, gt in zip(gen_ans, ref_ans)]
+    elif dataset_name in ['trivia', 'sciq']:
+        rouge = evaluate.load('rouge')
+        rouge_scores = rouge.compute(predictions=gen_ans, references=ref_ans, use_aggregator=False)['rougeL']
+        threshold = 0.7
+        labels = [0 if rouge_score >= threshold else 1 for rouge_score in list(rouge_scores)]
+    return labels
+    
 class CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == 'torch.storage' and name == '_load_from_bytes':
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
         else: return super().find_class(module, name)
 
-def load_hidden_states(dataset, topic, model_name, prompt_only=False):
+def load_hidden_states(dataset, subdataset, model_name, prompt_only=False):
     if not prompt_only:
-        hs_path = f'outputs/{dataset}/{topic}/{model_name}/hidden_states.pkl'
+        hs_path = f'outputs/{dataset}/{subdataset}/{model_name}/hidden_states.pkl'
     else:
-        hs_path = f'outputs/{dataset}/{topic}/{model_name}/prompt_hidden_states.pkl'
+        hs_path = f'outputs/{dataset}/{subdataset}/{model_name}/prompt_hidden_states.pkl'
     with open(hs_path, 'rb') as f:
         if torch.cuda.is_available():
             hs_all_responses = pickle.load(f)
@@ -258,9 +399,9 @@ def extract_hidden_states(hs_all_responses, response_idx):
     return np.array(collected_hidden_states), np.array(token_indices)
 
 
-def tok(tokenizer, dataset, topic, model_name, response_idx):
+def tok(tokenizer, dataset, subdataset, model_name, response_idx):
     responses = [] 
-    with open(f'outputs/{dataset}/{topic}/{model_name}/responses.jsonl', 'r', encoding='utf-8') as f:
+    with open(f'outputs/{dataset}/{subdataset}/{model_name}/responses.jsonl', 'r', encoding='utf-8') as f:
         for l in f:
             data = json.loads(l)
             responses.append(data['response'])
@@ -281,8 +422,8 @@ def tok(tokenizer, dataset, topic, model_name, response_idx):
         
     return tokenized
 
-def tok_input(tokenizer, dataset, topic, response_idx):
-    data = pd.read_csv(f"data/{dataset}_data/{topic}.csv")
+def tok_input(tokenizer, dataset, subdataset, response_idx):
+    data = pd.read_csv(f"data/{dataset}_data/{subdataset}.csv")
     response = data.iloc[response_idx]['statement']
     enc = tokenizer(
         response,
@@ -297,3 +438,9 @@ def tok_input(tokenizer, dataset, topic, response_idx):
         token_text  = response[start:end]
         tokenized.append(token_text)
     return tokenized
+
+
+# Normalise
+def preprocess(seqs, mu, std):
+    seqs = [(s - mu) / std for s in seqs]
+    return torch.stack(seqs)
