@@ -11,7 +11,8 @@ class RNNClassifier(nn.Module):
         self.rnn = nn.GRU(input_dim, hidden_dim, num_layers=n_layers, batch_first=True)
         self.out = nn.Linear(hidden_dim, 1)
 
-    def forward(self, x, lengths):
+    def forward(self, x, mask):
+        lengths = torch.sum(~mask, axis=1)
         packed = nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
         _, h_n = self.rnn(packed)
         logits = self.out(h_n[-1])  # last layer's hidden state
