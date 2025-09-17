@@ -1,6 +1,7 @@
-# MODELS='meta-llama/Llama-3.2-3B-Instruct Qwen/Qwen3-4B-Instruct-2507 mistralai/Ministral-8B-Instruct-2410'
-MODELS='meta-llama/Llama-3.2-3B-Instruct'
-DATASETS='trivia sciq medmcqa commonsenseqa mmlu'
+MODELS='meta-llama/Llama-3.2-3B-Instruct Qwen/Qwen3-4B-Instruct-2507 mistralai/Ministral-8B-Instruct-2410 meta-llama/Llama-3.1-8B-Instruct Qwen/Qwen3-30B-A3B-Instruct-2507'
+# MODELS='Qwen/Qwen3-4B-Instruct-2507'
+DATASETS='trivia sciq medmcqa'
+
 for MODEL in $MODELS
 do
     for DATA in $DATASETS
@@ -8,13 +9,10 @@ do
 
         if [ $DATA = 'true_false' ]; then
             TOPICS='animals cities companies elements facts generated inventions'
-            PROMPT='cot_zero'
         elif [ $DATA = 'halueval' ]; then
             TOPICS='Bio-Medical Education Finance Open-Domain Science'
-            PROMPT='cot_zero'
         elif [ $DATA = 'fever' ]; then
             TOPICS='None'
-            PROMPT='cot_zero'
         else
             PROMPT=$DATA
             TOPICS='None'
@@ -22,7 +20,7 @@ do
 
         for TOPIC in $TOPICS
         do
-            python train.py --model $MODEL --dataset_name $DATA --subdataset $TOPIC --data_portion 1.0 --prompt_type $PROMPT --arch rnn --features all
+            python eval.py --model $MODEL --dataset_name $DATA --subdataset $TOPIC --data_portion 1.0 --save
         done
     done
 done 

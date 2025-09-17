@@ -14,7 +14,7 @@ do
 
         for TOPIC in $TOPICS
         do
-            python evaluate.py --model $MODEL --dataset_name $DATA --topic $TOPIC --data_portion 1.0 --prompt_type $PROMPT --save
+            python evaluate.py --model $MODEL --dataset_name $DATA --topic $TOPIC --data_portion 1.0 --prompt_type $PROMPT
         done
     done
 done 
