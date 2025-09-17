@@ -1,9 +1,11 @@
-import math
 import numpy as np
-from scipy.stats import directional_stats, entropy
-from utils.misc import to_cpu
+from scipy.stats import directional_stats
+from scipy.sparse.linalg import eigsh, LinearOperator
+from sklearn.covariance import oas 
+
 import torch
 import torch.nn.functional as F
+from utils.misc import to_cpu
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -169,7 +171,7 @@ class VarianceScore(CoEScore):
     def eigenscore(self):
         embeddings = self.hs_layer
         centred = embeddings - embeddings.mean(axis=-1, keepdims=True)
-        cov = centred @ centred.transpose(0, 2, 1)
+        cov = centred @ centred.transpose(0, 2, 1) / (centred.shape[-1] - 1)
         reg_cov = cov + 1e-3 * np.stack([np.eye(cov.shape[1])]*cov.shape[0], axis=0)
         eigvals = np.linalg.eigvalsh(reg_cov)
         eigenscore = np.log(np.clip(eigvals, 1e-8, None)).mean(-1)
@@ -178,16 +180,76 @@ class VarianceScore(CoEScore):
             eigenscore = np.sum(self.weights * eigenscore) / np.sum(self.weights)
         return eigenscore
     
+    def emp_cov(self):
+        embeddings = self.hs_layer
+        centred = embeddings - embeddings.mean(axis=1, keepdims=True)
+        cov = centred @ centred.transpose(0, 2, 1) / (centred.shape[-1] - 1)
+        reg_cov = cov + 1e-5 * np.stack([np.eye(cov.shape[1])]*cov.shape[0], axis=0)
+        eigvals = np.linalg.eigvalsh(reg_cov)
+        emp_cov = np.log(np.clip(eigvals, 1e-8, None)).mean(-1)
+        
+        if self.weights is not None:
+            emp_cov = np.sum(self.weights * emp_cov) / np.sum(self.weights)
+        return emp_cov
+    
+    def shrunk_cov(self):
+        embeddings = self.hs_layer.squeeze(0)
+        n, p = embeddings.shape
+        shrunk_cov, _ = oas(embeddings)
+        # eigvals = np.linalg.eigvalsh(shrunk_cov)
+        def matvec(v):
+            return shrunk_cov @ v
+
+        # Create the LinearOperator object
+        C_op = LinearOperator((p, p), matvec=matvec, dtype=shrunk_cov.dtype)
+
+        eigenvalues_top_k, _ = eigsh(C_op, k=50, which='LM')
+        return np.log(np.clip(eigenvalues_top_k, 1e-8, None)).mean(-1)
+    
+    def oas_cov(self):
+        embeddings = self.hs_layer.squeeze(0).T
+        n, p = embeddings.shape
+
+        
+        embeddings = embeddings - embeddings.mean(axis=0, keepdims=True)
+        S = (embeddings.T @ embeddings) / n
+
+        # Trace terms
+        trS = np.trace(S)
+        trS2 = np.sum(S * S)  # = trace(S @ S)
+
+        # OAS shrinkage coefficient (clip to [0,1])
+        denom = (n + 1 - 2.0/p) * (trS2 - (trS * trS) / p)
+        if denom <= 0:
+            alpha = 0.0  # spherical or numerically degenerate case; S already ~ mu*I
+        else:
+            alpha = ((1.0 - 2.0/p) * trS2 + trS * trS) / denom
+            alpha = float(np.clip(alpha, 0.0, 1.0))
+
+        # Shrink toward scaled identity mu * I, where mu = tr(S)/p
+        mu = trS / p
+        Sigma_hat = (1.0 - alpha) * S + alpha * mu * np.eye(p, dtype=np.float64)
+        eigvals = np.linalg.eigvalsh(Sigma_hat)
+        oas_cov = np.log(np.clip(eigvals, 1e-8, None)).mean(-1)
+        return oas_cov
+
+    # def robust_cov(self):
+    #     embeddings = self.hs_layer
+    #     cov = MinCovDet().fit(embeddings.squeeze(0)).covariance_
+    #     reg_cov = cov + 1e-3 * np.stack([np.eye(cov.shape[1])]*cov.shape[0], axis=0)
+    #     return np.linalg.det(reg_cov)
+    
     
 # Adapted from https://github.com/Alsace08/Chain-of-Embedding/blob/master/score.py
 class OutputScore():
-    def __init__(self, logits):
+    def __init__(self, logits, per_token=False):
         self.logits = torch.stack(
             [torch.as_tensor(logits[t][0], device=device, dtype=torch.float32)
              for t in range(len(logits))],
             dim=0
         )
         self.probs = F.softmax(self.logits, dim=1)
+        self.per_token = per_token
         
     def compute_maxprob(self):
         max_prob = torch.mean(torch.max(self.probs, dim=1)[0]).item()
@@ -200,7 +262,10 @@ class OutputScore():
 
     def compute_entropy(self):
         seq_entropy = torch.sum(-self.probs * torch.log(torch.clip(self.probs, min=1e-8)), dim=1)
-        seq_entropy = torch.mean(seq_entropy).item()
+        if self.per_token:
+            seq_entropy = seq_entropy.detach().cpu().numpy()
+        else:
+            seq_entropy = torch.mean(seq_entropy).item()
         return seq_entropy
     
     def compute_tempscale(self, temperature = 0.7):
