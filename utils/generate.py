@@ -1,12 +1,13 @@
 import os
 from tqdm import tqdm
 import json
+import numpy as np
 import torch
 from utils.misc import to_cpu
-from utils.dataset import extract_answer, append_answer
+from utils.dataset import parse_answer, extract_labels, append_answer
 
 class Inference():
-    def __init__(self, model, tokenizer, dataset_name, prompts, gt, out_dir=None, prompt_type='cot_zero', max_tokens=128):
+    def __init__(self, model, tokenizer, dataset_name, prompts, gt, out_dir=None, max_tokens=128):
         self.model = model
         self.tokenizer = tokenizer
         self.dataset_name = dataset_name
@@ -14,11 +15,27 @@ class Inference():
         self.gt = gt
         self.max_tokens = max_tokens
         self.out_dir = out_dir
-        self.prompt_type = prompt_type
+        if dataset_name in ['true_false', 'halueval', 'fever']:
+            self.prompt_type = 'fact'
+        else:
+            self.prompt_type = dataset_name
         
+    # def _to_tuple(self, obj):
+    #     if isinstance(obj, list) or isinstance(obj, torch.Tensor):
+    #         return tuple(self._to_tuple(i) for i in obj)
+    #     return obj
+    
     def _to_tuple(self, obj):
-        if isinstance(obj, list):
-            return tuple(self.to_tuple(i) for i in obj)
+        # Convert lists/tuples to tuples (and recurse)
+        if isinstance(obj, (list, tuple)):
+            return tuple(self._to_tuple(x) for x in obj)
+
+        if isinstance(obj, torch.Tensor):
+            if obj.ndim > 3:
+                return tuple(self._to_tuple(x) for x in obj)
+            else:
+                return obj
+        # Fallback: return as-is
         return obj
     
     def _compute_lengths(self, attn_mask, sequences, eos_token_id):
@@ -95,11 +112,11 @@ class Inference():
             
             excl_indices = []
             for i, answer in enumerate(answer_txts):
-                gen_ans = extract_answer(answer, self.dataset_name)
-                if gen_ans is None:
+                ans = parse_answer(answer, self.dataset_name)
+                if ans is None:
                     excl_indices.append(i)
                     continue
-                labels = append_answer(labels, gen_ans, self.gt[idx],  self.dataset_name)
+                labels = append_answer(labels, ans, self.gt[idx],  self.dataset_name)
                 gt.append(self.gt[idx])
     
                 all_pairs.append({"prompt": batch_prompts[i],
@@ -116,7 +133,7 @@ class Inference():
             if idx==0:
                 print(f'Prompt: {self.prompts[0]}\nAnswer: {answer_txts[0]}')
                 
-            del output; del input
+            del output
             torch.cuda.empty_cache()
         print(f'{len(labels)}/{len(self.prompts)} answered.')
         if self.out_dir:
@@ -156,45 +173,81 @@ class Inference():
             
         return input, output
     
-    def single_inference(self):
+    def extract_hs(self):
+        all_hs = []
+        all_logits = []
+        for idx, query in tqdm(enumerate(self.prompts), total=len(self.prompts), desc='Extracting hidden states'):
+            with torch.inference_mode():
+                messages = [
+                    {"role": "system",
+                    "content": "You are a helpful assistant, providing accurate and concise information without overthinking."},
+                    {"role": "user",
+                    "content": f"{query}"}
+                    ]   
+                prompt = self.tokenizer.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            enable_thinking=False)
+                input = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+                # input = self.tokenizer(query, return_tensors="pt").to(self.model.device)
+                output = self.model(**input, 
+                                    return_dict_in_generate=True,
+                                    output_hidden_states=True, 
+                                    output_scores=True)
+            all_hs.append(torch.stack(output.hidden_states).unsqueeze(3).permute(2, 0, 1, 3, 4).cpu())
+            all_logits.append(output.logits.permute(1, 0, 2).cpu())
+            del output; del input
+            torch.cuda.empty_cache()
+            
+        all_logits = [self._to_tuple(logits) for logits in all_logits]
+        all_hs = [self._to_tuple(hs) for hs in all_hs]
+        return all_hs, all_logits, None, self.gt, None, list(np.arange(len(self.prompts)))
+    
+    def data_inference(self):
         # Generate responses to prompts
         all_hs = []
         all_logits = []
         all_pairs = []
+        gen_ans = []
         labels = []
         gt = []
+        ids = []
         
         for idx, query in tqdm(enumerate(self.prompts), total=len(self.prompts), desc='Generating responses'):
             input, output = self.generate(query)
             sequences = output.sequences
             response_id = sequences[0,input.input_ids.shape[-1]:]
-            answer_txt = self.tokenizer.decode(response_id) # skip_special_tokens=True)            
-            gen_ans = extract_answer(answer_txt, self.dataset_name)
+            answer_txt = self.tokenizer.decode(response_id, skip_special_tokens=True)            
+            ans = parse_answer(answer_txt, self.dataset_name)
+            
+            if idx==0:
+                print(f'Prompt: {query}\nAnswer: {answer_txt}')
+            
+            if ans is None:
+                continue
             
             all_pairs.append({"prompt": query,
                             "response": answer_txt,
                             "response_id": response_id.detach().cpu().numpy().tolist()})
             
-            if gen_ans is None:
-                continue
-    
-            if idx==0:
-                print(f'Prompt: {query}\nAnswer: {answer_txt}')
-            
-            labels = append_answer(labels, gen_ans, self.gt[idx],  self.dataset_name)
+            gen_ans.append(ans)
             gt.append(self.gt[idx])
-
+            # labels = append_answer(labels, ans, self.gt[idx],  self.dataset_name)
+            ids.append(idx)
+            
             all_hs.append(to_cpu(output.hidden_states))
             all_logits.append(to_cpu(output.scores))
-            
+        
             del output
             torch.cuda.empty_cache()
+        labels = extract_labels(self.dataset_name, gen_ans, gt)
         print(f'{len(labels)}/{len(self.prompts)} extracted.')
         
         if self.out_dir:
             self.save(all_pairs)
                 
-        return all_hs, all_logits, labels, gt, all_pairs
+        return all_hs, all_logits, labels, gt, all_pairs, ids
                 
     def generate(self, query):
         messages = [
