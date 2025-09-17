@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn.functional as F
-from utils.dataset import prepare_dataset
+from utils.dataset import prepare_dataset, load_generations
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -22,7 +22,7 @@ def candidate_first_token_ids(tokenizer, letter="A"):
 
 
 @torch.no_grad()
-def p_true_for_prompts(model, tokenizer, prompts, temperature=1.0):
+def get_p_true(model, tokenizer, prompts, temperature=1.0):
     device = next(model.parameters()).device
     enc = tokenizer(prompts, padding=True, return_tensors="pt")
     enc = {k: v.to(device) for k, v in enc.items()}  # input_ids, attention_mask
@@ -38,7 +38,10 @@ def p_true_for_prompts(model, tokenizer, prompts, temperature=1.0):
     # Sum probability mass over plausible first-token IDs for 'A'
     a_ids = torch.tensor(candidate_first_token_ids(tokenizer, "A"), device=device)
     p_true = probs.index_select(1, a_ids).sum(dim=1)
-    return p_true.detach().cpu().numpy() 
+    
+    # b_ids = torch.tensor(candidate_first_token_ids(tokenizer, "B"), device=device)
+    # p_false = probs.index_select(1, b_ids).sum(dim=1)
+    return p_true.detach().cpu().numpy()# , p_false.detach().cpu().numpy()
 
 
 def main():
@@ -65,17 +68,19 @@ def main():
     model.generation_config.pad_token_id = tokenizer.pad_token_id
 
     # Read data
-    dataset, formatter = prepare_dataset(args.dataset_name, args.topic)
-    prompts, gt = formatter(args.dataset_name, dataset, 'p_true')
+    dataset, _ = prepare_dataset(args.dataset_name, args.topic)
+    generations, gt = load_generations(dataset, args)
+    gt = 1 - np.asarray(gt) # flip 0 -> wrong/false
     
-
     # Batched scoring
     scores = []
-    for i in range(0, len(prompts), args.batch_size):
-        batch_prompts = prompts[i:i + args.batch_size]
-        s = p_true_for_prompts(model, tokenizer, batch_prompts, temperature=args.temperature)
-        scores.append(s)
-    scores = np.concatenate(scores, axis=0)  # shape: (N_statements,)
+    for i in range(0, len(generations), args.batch_size):
+        batch_prompts = generations[i:i + args.batch_size]
+        p_true = get_p_true(model, tokenizer, batch_prompts, temperature=args.temperature)
+        # scores.extend(zip(p_true.tolist(), p_false.tolist()))
+        scores.append(p_true)
+    scores = np.concatenate(scores, axis=0)  # shape: (N_statements,2)
+    # scores = np.asarray(scores)
 
     # Save
     if args.save:
@@ -88,9 +93,12 @@ def main():
     auc = roc_auc_score(gt, scores)
     fpr95 = fpr_at_95_tpr(gt, scores)
     aupr = average_precision_score(gt, scores)
-    print(f'######### {args.model} ----- {args.dataset_name}/{args.topic} #########\n'
+    print(f'######### {args.model} ----- {args.dataset_name}/{args.topic} #########\nP(True)\n'
           f'auc: {auc}, fpr@95: {fpr95}, aupr: {aupr}')
+    # auc = roc_auc_score(gt, 1-scores[:,1])
+    # fpr95 = fpr_at_95_tpr(gt, 1-scores[:,1])
+    # aupr = average_precision_score(gt, 1-scores[:,1])
+    # print(f'P(False)\nauc: {auc}, fpr@95: {fpr95}, aupr: {aupr}')
 
 if __name__ == "__main__":
-    out_dir = f"outputs/{args.dataset_name}/{args.topic}/{args.model}"
     main()

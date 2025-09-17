@@ -9,14 +9,18 @@ from transformers import AutoTokenizer
 def get_tokenwise_importance(args):
     measure_model = CrossEncoder('cross-encoder/stsb-roberta-large', num_labels=1)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     generations = []
-    if args.topic!='None':
-        file_dir = f'outputs/{args.dataset_name}/{args.topic}/{args.model}'
+    if args.dataset_name in ['true_false', 'halueval', 'fever']:
+        prompt_type = 'fact'
+    else:
+        prompt_type = args.dataset_name
+    if args.subdataset!='None':
+        file_dir = f'outputs/{args.dataset_name}/{args.subdataset}/{args.model}'
     else:
         file_dir = f'outputs/{args.dataset_name}/{args.model}'
-    with open(f'{file_dir}/responses_{args.prompt_type}.jsonl',
+    with open(f'{file_dir}/responses_{prompt_type}.jsonl',
               'r', encoding='utf-8') as f:
         for line in f:
             if line.strip():
@@ -47,4 +51,3 @@ def get_tokenwise_importance(args):
 
    
     return token_importance_list
-
