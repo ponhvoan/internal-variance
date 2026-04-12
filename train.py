@@ -7,11 +7,10 @@ import torch
 from torch.utils.data import DataLoader, random_split
 import numpy as np
 from sklearn.metrics import roc_auc_score, average_precision_score
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from utils.models import TransformerClassifier, RNNClassifier
-from utils.dataset import SequenceDataset, collate_fn, preprocess
+from utils.dataset import SequenceDataset, collate_fn, fit_scaler, preprocess
 from utils.misc import fpr_at_95_tpr
 
 
@@ -21,8 +20,6 @@ def train(model, optim, criterion, device, mu, std, train_loader):
     for x, mask, y in train_loader:
         x, mask, y = x.to(device), mask.to(device), y.to(device)
         x = preprocess(x, mu.to(device), std.to(device))
-        # x = [reverse_sequence(s) for s in x]
-        # x = torch.stack(x)
         optim.zero_grad()
         logits = model(x, mask)
         loss = criterion(logits, y)
@@ -67,27 +64,18 @@ if __name__ == "__main__":
     seed = 42
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
-    fp = f"outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
+    fp = f"../internal-variance-old/outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
     fp = fp.replace("/None", "") if "None" in fp else fp
     with open(os.path.join(fp, f"tokenDict.pkl"), "rb") as f:
         scores = pickle.load(f)
-        scores = [score.T for score in scores] if np.ndim(scores[0])>=2 else [np.expand_dims(s, 1) for s in scores]
-    with open(os.path.join(fp, f"tokenImpt.pkl"), "rb") as f:
-        token_importance = pickle.load(f)
-        # token_importace = [np.expand_dims(i, 1) for i in token_importance]
+        scores = [score.T for score in scores]
     with open(os.path.join(fp, f"hsPCA.pkl"), "rb") as f:
         hs = pickle.load(f)
         
     if args.features=='var':
-        # seqs = [np.expand_dims(s, 1) for s in scores]
         seqs = scores
     elif args.features=='hs':
         seqs = hs
-    elif args.features=='var+impt':
-        seqs = [
-                np.concatenate((a, b[:,None]), axis=1)
-                for a, b in zip(scores, token_importance)
-                ]
     elif args.features=='all':
         seqs = [
                 np.concatenate((a, b), axis=1)
@@ -102,11 +90,9 @@ if __name__ == "__main__":
     dataset = SequenceDataset(seqs, labels)
     train_set, val_set = random_split(dataset, [int(0.8*len(seqs)), len(seqs)-int(0.8*len(seqs))])
     train_values = torch.cat([seq for seq, _ in train_set])
-    mu  = train_values.mean(0)
-    std = train_values.std(0).clamp_min(1e-6)
-
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_set,   batch_size=args.batch_size, collate_fn=collate_fn)
+    mu, std = fit_scaler(train_loader, device)
 
     # --------------- model / optim ---------------
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -115,9 +101,8 @@ if __name__ == "__main__":
     elif args.arch=='rnn':
         model = RNNClassifier(input_dim=seqs[0].shape[-1]).to(device)
 
-    optim  = torch.optim.Adam(model.parameters(), lr=1e-4)
-    # criterion = torch.nn.BCEWithLogitsLoss()
-    criterion = torch.nn.CrossEntropyLoss()
+    optim  = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    criterion = torch.nn.BCEWithLogitsLoss()
 
     # --------------- training loop ---------------
     print(f"-----------{args.model.split('/')[-1]}: {args.dataset_name}/{args.subdataset}-----------")
@@ -134,7 +119,6 @@ if __name__ == "__main__":
         else:
             count += 1
             
-        # print(f"Epoch {epoch:02d} | train loss {train_loss:.4f} | val acc {acc*100:.2f} | val AUC {auc*100:.2f} | val FPR@95 {fpr95*100:.2f} | val AUPR {aupr*100:.2f} ")
         if epoch%25==0 and count<patience and epoch<args.num_epochs:
             print(f"Epoch {epoch:02d} | train loss {train_loss:.4f} | val acc {acc*100:.2f} | val AUC {auc*100:.2f} | val FPR@95 {fpr95*100:.2f} | val AUPR {aupr*100:.2f} ")
             

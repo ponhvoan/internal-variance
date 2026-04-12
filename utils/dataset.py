@@ -12,6 +12,53 @@ from torch.utils.data import Dataset
 from datasets import load_dataset, Value
 import evaluate
 
+##### Data preprocessing and misc utils #######
+
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else: return super().find_class(module, name)
+
+@torch.no_grad()
+def fit_scaler(train_loader, device="cpu"):
+    total_sum = None
+    total_sq  = None
+    total_cnt = 0
+
+    for x, pad_mask, _ in train_loader:
+        x = x.to(device)
+        pad_mask = pad_mask.to(device)
+
+        valid = (~pad_mask).unsqueeze(-1)
+        x_valid = x * valid
+
+        s  = x_valid.sum(dim=(0,1))
+        s2 = (x_valid * x_valid).sum(dim=(0,1))
+        n  = valid.sum().item()
+
+        if total_sum is None:
+            total_sum = s
+            total_sq  = s2
+        else:
+            total_sum += s
+            total_sq  += s2
+        total_cnt += n
+
+    mu  = total_sum / total_cnt
+    ex2 = total_sq  / total_cnt
+    var = (ex2 - mu**2).clamp_min(1e-12)
+    std = var.sqrt()
+
+    return mu, std
+
+# Normalise
+def preprocess(seqs, pad_mask, mu, std):
+    x = (seqs - mu.view(1,1,-1)) / std.view(1,1,-1)
+    x = x.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+    return x
+
+####### Dataset utils #######
 class SequenceDataset(Dataset):
     def __init__(self, sequences: List[Sequence[float]], labels):
         assert len(sequences) == len(labels)
@@ -63,28 +110,14 @@ def format_qa(question, choice):
     return f"Q: {question} A: {choice}"
 
 def format_prompt(dataset_name, dataset):
-    if dataset_name in ['true_false', 'halueval', 'fever']:
+    if dataset_name in ['true_false', 'fever']:
         prompt_type = 'fact'
     else:
         prompt_type = dataset_name
     all_prompts = []
     all_gt = []
-    if dataset_name == 'halueval':
-        for i in range(len(dataset)):
-            responses= dataset[i]['chatgpt_fact']
-            gts = dataset[i]['human_judge']
-            
-            if len(responses) == len(gts):
-                for j in range(len(responses)): 
-                    choice = responses[j]
-                    gt = gts[j]
-                    with open(f'prompts/{prompt_type}.txt', 'r', encoding='utf-8') as f:
-                        prompt = f.read()
-                    prompt = prompt.format(query=choice)
-                    all_prompts.append(prompt)
-                    all_gt.append(gt)
-        
-    elif dataset_name in ['true_false', 'mmlu', 'commonsenseqa', 'math', 'fever']:
+    
+    if dataset_name in ['true_false', 'mmlu', 'commonsenseqa', 'math', 'fever']:
         for i in range(len(dataset)):
             gt = dataset[i]['answer']
             query= dataset[i]['question']
@@ -141,10 +174,7 @@ def format_prompt(dataset_name, dataset):
 
 def prepare_dataset(dataset_name, subdataset):
     
-    if dataset_name == 'halueval':
-        dataset = load_dataset('json', data_files=f'data/halueval_data/{subdataset}.json')['train']
-        dataset = dataset.map(lambda x: {"human_judge": [1 if val.lower() == "true" else 0 for val in x["human_judge"]]})
-    elif dataset_name == 'true_false':
+    if dataset_name == 'true_false':
         dataset = load_dataset('csv', data_files=f'data/true_false_data/{subdataset}.csv')['train']
         dataset = dataset.rename_columns({'statement': 'question', 'label': 'answer'})
     elif dataset_name == 'mmlu':
@@ -211,21 +241,14 @@ def load_generations(dataset, args):
     return prompts, labels
 
 def parse_answer(answer_txt, dataset_name):
-    # if "<|im_end|>" not in answer_txt and "<|eot_id|>" not in answer_txt and "</s>" not in answer_txt and "<|END_OF_TURN_TOKEN|>" not in answer_txt:
-    #     return None
 
-    if dataset_name in ['true_false', 'halueval', 'fever']:
+    if dataset_name in ['true_false', 'fever']:
         if 'true' in answer_txt.lower():
             return 1
         elif 'false' in answer_txt.lower():
             return 0
         else:
             return None
-        # match = re.search(r"(?i)Answer\s*:\s*(True|False)", answer_txt)
-        # if match:
-        #     return match.group(1).lower()
-        # else:
-        #     return None
         
     elif dataset_name in ['mmlu', 'medmcqa']:
         map = {'a': 0, 'b': 1, 'c': 2, 'd':3}
@@ -305,7 +328,7 @@ def parse_answer(answer_txt, dataset_name):
         return answer_txt
 
 def append_answer(labels, gen_ans, gt, dataset_name):
-    if dataset_name in ['true_false', 'halueval', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
+    if dataset_name in ['true_false', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
        labels.append(0 if gen_ans==gt else 1)
     elif dataset_name == 'gsm':
        labels.append(0 if gen_ans==float(gt.replace(',', '').strip()) else 1)
@@ -319,7 +342,7 @@ def append_answer(labels, gen_ans, gt, dataset_name):
     return labels
 
 def extract_labels(dataset_name, gen_ans, ref_ans):
-    if dataset_name in ['true_false', 'halueval', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
+    if dataset_name in ['true_false', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
        gen_ans = [1 if 'true' in label.lower() else 0 for label in gen_ans]
        labels = [0 if ans==ref else 1 for ans, ref in zip(gen_ans, ref_ans)]
 
@@ -333,12 +356,8 @@ def extract_labels(dataset_name, gen_ans, ref_ans):
         threshold = 0.7
         labels = [0 if rouge_score >= threshold else 1 for rouge_score in list(rouge_scores)]
     return labels
-    
-class CPU_Unpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        if module == 'torch.storage' and name == '_load_from_bytes':
-            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
-        else: return super().find_class(module, name)
+
+####### Visualisation utils #######
 
 def load_hidden_states(dataset, subdataset, model_name, prompt_only=False):
     if not prompt_only:
@@ -438,9 +457,3 @@ def tok_input(tokenizer, dataset, subdataset, response_idx):
         token_text  = response[start:end]
         tokenized.append(token_text)
     return tokenized
-
-
-# Normalise
-def preprocess(seqs, mu, std):
-    seqs = [(s - mu) / std for s in seqs]
-    return torch.stack(seqs)
