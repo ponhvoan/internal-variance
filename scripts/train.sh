@@ -1,4 +1,3 @@
-# MODELS='meta-llama/Llama-3.2-3B-Instruct Qwen/Qwen3-4B-Instruct-2507 mistralai/Ministral-8B-Instruct-2410'
 MODELS='meta-llama/Llama-3.2-3B-Instruct'
 DATASETS='trivia sciq medmcqa commonsenseqa mmlu'
 for MODEL in $MODELS
@@ -22,7 +21,7 @@ do
 
         for TOPIC in $TOPICS
         do
-            python train.py --model $MODEL --dataset_name $DATA --subdataset $TOPIC --data_portion 1.0 --prompt_type $PROMPT --arch rnn --features all
+            python train.py --model $MODEL --dataset_name $DATA --subdataset $TOPIC --data_portion 1.0 --prompt_type $PROMPT --arch transformer --features all
         done
     done
 done 

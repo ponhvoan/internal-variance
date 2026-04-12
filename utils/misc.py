@@ -19,12 +19,6 @@ def fpr_at_95_tpr(y_true, y_score):
     # Find the threshold where TPR >= 0.95
     idxs = np.where(tpr >= 0.95)[0]
     if len(idxs) == 0:
-        return None  # No threshold achieves 95% TPR
-    idx = idxs[0]  # first index where TPR >= 0.95
+        return None 
+    idx = idxs[0]
     return fpr[idx]
-
-
-# Normalise
-def preprocess(seqs, mu, std):
-    seqs = [(s - mu) / std for s in seqs]
-    return torch.stack(seqs)

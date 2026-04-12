@@ -12,7 +12,6 @@ from utils.misc import fpr_at_95_tpr
 
 def candidate_first_token_ids(tokenizer, letter="A"):
     variants = (letter, f" {letter}", f"\n{letter}", f"({letter})", f" ({letter})", f"\n({letter})")
-    # variants = (letter, f" {letter}", f"\n{letter}")
     ids = set()
     for v in variants:
         toks = tokenizer.encode(v, add_special_tokens=False)
@@ -39,9 +38,7 @@ def get_p_true(model, tokenizer, prompts, temperature=1.0):
     a_ids = torch.tensor(candidate_first_token_ids(tokenizer, "A"), device=device)
     p_true = probs.index_select(1, a_ids).sum(dim=1)
     
-    # b_ids = torch.tensor(candidate_first_token_ids(tokenizer, "B"), device=device)
-    # p_false = probs.index_select(1, b_ids).sum(dim=1)
-    return p_true.detach().cpu().numpy()# , p_false.detach().cpu().numpy()
+    return p_true.detach().cpu().numpy()
 
 
 def main():
@@ -77,10 +74,8 @@ def main():
     for i in range(0, len(generations), args.batch_size):
         batch_prompts = generations[i:i + args.batch_size]
         p_true = get_p_true(model, tokenizer, batch_prompts, temperature=args.temperature)
-        # scores.extend(zip(p_true.tolist(), p_false.tolist()))
         scores.append(p_true)
     scores = np.concatenate(scores, axis=0)  # shape: (N_statements,2)
-    # scores = np.asarray(scores)
 
     # Save
     if args.save:
@@ -95,10 +90,6 @@ def main():
     aupr = average_precision_score(gt, scores)
     print(f'######### {args.model} ----- {args.dataset_name}/{args.topic} #########\nP(True)\n'
           f'auc: {auc}, fpr@95: {fpr95}, aupr: {aupr}')
-    # auc = roc_auc_score(gt, 1-scores[:,1])
-    # fpr95 = fpr_at_95_tpr(gt, 1-scores[:,1])
-    # aupr = average_precision_score(gt, 1-scores[:,1])
-    # print(f'P(False)\nauc: {auc}, fpr@95: {fpr95}, aupr: {aupr}')
 
 if __name__ == "__main__":
     main()

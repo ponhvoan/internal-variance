@@ -19,12 +19,7 @@ class Inference():
             self.prompt_type = 'fact'
         else:
             self.prompt_type = dataset_name
-        
-    # def _to_tuple(self, obj):
-    #     if isinstance(obj, list) or isinstance(obj, torch.Tensor):
-    #         return tuple(self._to_tuple(i) for i in obj)
-    #     return obj
-    
+            
     def _to_tuple(self, obj):
         # Convert lists/tuples to tuples (and recurse)
         if isinstance(obj, (list, tuple)):
@@ -190,7 +185,6 @@ class Inference():
                             add_generation_prompt=True,
                             enable_thinking=False)
                 input = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-                # input = self.tokenizer(query, return_tensors="pt").to(self.model.device)
                 output = self.model(**input, 
                                     return_dict_in_generate=True,
                                     output_hidden_states=True, 
@@ -233,7 +227,6 @@ class Inference():
             
             gen_ans.append(ans)
             gt.append(self.gt[idx])
-            # labels = append_answer(labels, ans, self.gt[idx],  self.dataset_name)
             ids.append(idx)
             
             all_hs.append(to_cpu(output.hidden_states))

@@ -60,7 +60,7 @@ class TransformerClassifier(nn.Module):
         num_layers: int = 2,
         dim_feedforward: int = 256,
         dropout: float = 0.1,
-        pooled: str = "attn",  # "mean" | "cls"
+        pooled: str = "attn",
     ):
         super().__init__()
         self.d_model = d_model
