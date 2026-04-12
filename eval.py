@@ -12,7 +12,6 @@ from sklearn.decomposition import PCA
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from utils.token_importance import get_tokenwise_importance
 from utils.dataset import prepare_dataset
 from utils.generate import Inference
 from utils.misc import fpr_at_95_tpr
@@ -33,7 +32,7 @@ if __name__ == "__main__":
 
     # Config
     max_new_tokens = args.max_new_tokens
-    out_dir = f"outputs/{args.dataset_name}/{args.subdataset}/{args.model}" #if args.save else None
+    out_dir = f"outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
     out_dir = out_dir.replace('/None', '') if 'None' in out_dir else out_dir
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -72,18 +71,12 @@ if __name__ == "__main__":
               'energy': [],
               'pairwise_dissimilarity': [],
               'circ_variance':[],
-              'eigenscore': [],
-              'emp_cov': [],
-              'oas_cov': [],
-            #   'robust_cov': [],
+              'covdet': [],
               'coe_angles': [],
               'coe_mag': [],
               'coe_r': [],
               'coe_c': []
               }
-    
-    # token_impt_all = get_tokenwise_importance(args)
-    # token_impt_all = list(map(token_impt_all.__getitem__, ids))
     
     for idx in tqdm(range(len(all_hs)), desc='Computing scores'):
         
@@ -99,20 +92,13 @@ if __name__ == "__main__":
         scores['tempscaled'].append(-np.mean(max_scaledp))
         scores['energy'].append(np.mean(energy))
         
-        # token_weights = token_impt_all[idx]
         var_scorer = VarianceScore(all_hs[idx], which='mean')
         dissim = var_scorer.pairwise_dissimilarities()
         var = var_scorer.circ_variance()
-        eigenscore = var_scorer.eigenscore()
-        emp_cov = var_scorer.emp_cov()
-        oas_cov = var_scorer.oas_cov()
-        # robust_cov = var_scorer.robust_cov()
+        covdet = var_scorer.covdet()
         scores['pairwise_dissimilarity'].append(np.mean(dissim))
         scores['circ_variance'].append(-np.mean(var))
-        scores['eigenscore'].append(-np.mean(eigenscore))
-        scores['emp_cov'].append(-np.mean(emp_cov))
-        scores['oas_cov'].append(-np.mean(oas_cov))
-        # scores['robust_cov'].append(-np.mean(robust_cov))
+        scores['covdet'].append(-np.mean(covdet))
         
         coe_scorer = CoEScore(all_hs[idx], which='mean')
         ang = coe_scorer.coe_ang()[-1]
@@ -146,7 +132,6 @@ if __name__ == "__main__":
         def stack_hidden_states(hidden_states):
             n_out_tokens = len(hidden_states)
             n_layers = len(hidden_states[0])
-            # get hidden size
             n_dim = hidden_states[0][0].size(-1)
 
             result = torch.zeros(n_out_tokens, n_layers, n_dim)
@@ -163,10 +148,6 @@ if __name__ == "__main__":
             curr_hs = stack_hidden_states(all_hs[i])
             curr_hs = torch.mean(curr_hs, dim=1)
             hs_tokens.append(curr_hs.numpy())
-        # hs_tokens = []
-        # for i in tqdm(range(len(all_hs))):
-        #     curr_hs = np.stack([all_hs[i][j][-1].squeeze().detach().cpu().numpy() if j!=0 else all_hs[i][j][-1][-1][-1].squeeze().detach().cpu().numpy() for j in range(len(all_hs[i]))])
-        #     hs_tokens.append(curr_hs)
         
         lens = [hs.shape[0] for hs in hs_tokens]
         hs_stacked = np.vstack(hs_tokens)
@@ -182,20 +163,13 @@ if __name__ == "__main__":
             entropy = output_scorer.compute_entropy()
             var_scorer = VarianceScore(all_hs[idx], which='per_token', weights=None)
             var = var_scorer.circ_variance()
-            eigenscore = var_scorer.eigenscore()
+            covdet = var_scorer.covdet()
             emp_cov = var_scorer.emp_cov()
-            token_vars.append(np.asarray((var, eigenscore, emp_cov, entropy)))
-        hs_last = np.asarray([hs[-1][-1].squeeze().squeeze().numpy() for hs in all_hs])
-        with open(os.path.join(out_dir, f"hslast.pkl"), "wb") as f:
-            pickle.dump(hs_last, f)
+            token_vars.append(np.asarray((var, covdet, emp_cov, entropy)))
         with open(os.path.join(out_dir, f"hsPCA.pkl"), "wb") as f:
             pickle.dump(hs_pca, f)
-        with open(os.path.join(out_dir, f"hs.pkl"), "wb") as f:
-            pickle.dump(hs_tokens, f)    
         with open(os.path.join(out_dir, f"tokenDict.pkl"), "wb") as f:
             pickle.dump(token_vars, f)
-        # with open(os.path.join(out_dir, f"tokenImpt.pkl"), "wb") as f:
-        #     pickle.dump(token_impt_all, f)
         np.save(f"{out_dir}/scores", scores)
         np.save(f"{out_dir}/labels", labels)
         np.save(f"{out_dir}/gt", gt)
