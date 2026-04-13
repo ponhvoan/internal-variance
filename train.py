@@ -65,7 +65,7 @@ if __name__ == "__main__":
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    fp = f"../internal-variance-old/outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
+    fp = f"outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
     fp = fp.replace("/None", "") if "None" in fp else fp
     with open(os.path.join(fp, f"tokenDict.pkl"), "rb") as f:
         scores = pickle.load(f)
