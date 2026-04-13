@@ -19,7 +19,7 @@ def train(model, optim, criterion, device, mu, std, train_loader):
     loss_sum = 0
     for x, mask, y in train_loader:
         x, mask, y = x.to(device), mask.to(device), y.to(device)
-        x = preprocess(x, mu.to(device), std.to(device))
+        x = preprocess(x, mask, mu.to(device), std.to(device))
         optim.zero_grad()
         logits = model(x, mask)
         loss = criterion(logits, y)
@@ -35,7 +35,7 @@ def validate(model, device, mu, std, val_loader):
     with torch.no_grad():
         for x, mask, y in val_loader:
             x, mask = x.to(device), mask.to(device)
-            x = preprocess(x, mu.to(device), std.to(device))
+            x = preprocess(x, mask, mu.to(device), std.to(device))
             logits = model(x, mask)
             prob = torch.sigmoid(logits).cpu().numpy()
             preds.extend(prob)
@@ -48,11 +48,11 @@ def validate(model, device, mu, std, val_loader):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='meta-llama/Llama-3.2-3B-Instruct')
+    parser.add_argument('--model', type=str, default='meta-llama/Llama-3.1-8B-Instruct')
     parser.add_argument('--dataset_name', type=str, default='true_false')
-    parser.add_argument('--subdataset', type=str, default='animals')
-    parser.add_argument('--arch', type=str, default='rnn', choices=['rnn', 'transformer'])
-    parser.add_argument('--features', type=str, default='var+impt', choices=['hs', 'var', 'var+impt', 'all'])
+    parser.add_argument('--subdataset', type=str, default='counterfact')
+    parser.add_argument('--arch', type=str, default='transformer', choices=['rnn', 'transformer'])
+    parser.add_argument('--features', type=str, default='all', choices=['hs', 'var', 'all'])
     parser.add_argument('--data_portion', type=float, default=1.0)
     parser.add_argument('--prompt_type', type=str, default='cot_zero')
     parser.add_argument('--num_epochs', type=int, default=500)
@@ -63,6 +63,7 @@ if __name__ == "__main__":
     # Load dataset and prepare dataloaders
     seed = 42
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     fp = f"../internal-variance-old/outputs/{args.dataset_name}/{args.subdataset}/{args.model}"
     fp = fp.replace("/None", "") if "None" in fp else fp
@@ -95,7 +96,6 @@ if __name__ == "__main__":
     mu, std = fit_scaler(train_loader, device)
 
     # --------------- model / optim ---------------
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if args.arch=='transformer':
         model = TransformerClassifier(input_dim=seqs[0].shape[-1]).to(device)
     elif args.arch=='rnn':

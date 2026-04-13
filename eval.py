@@ -19,11 +19,11 @@ from score import CoEScore, VarianceScore, OutputScore
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='Qwen/Qwen3-4B-Instruct-2507')
-    parser.add_argument('--dataset_name', type=str, default='sciq')
-    parser.add_argument('--subdataset', type=str, default='None')
-    parser.add_argument('--max_new_tokens', type=int, default=1024)
-    parser.add_argument('--data_portion', type=float, default=0.2)
+    parser.add_argument('--model', type=str, default='meta-llama/Llama-3.1-8B-Instruct')
+    parser.add_argument('--dataset_name', type=str, default='true_false')
+    parser.add_argument('--subdataset', type=str, default='counterfact')
+    parser.add_argument('--max_new_tokens', type=int, default=128)
+    parser.add_argument('--data_portion', type=float, default=1.0)
     parser.add_argument('--save', action='store_true')
     args = parser.parse_args()
 
@@ -69,7 +69,6 @@ if __name__ == "__main__":
               'entropy': [],
               'tempscaled': [],
               'energy': [],
-              'pairwise_dissimilarity': [],
               'circ_variance':[],
               'covdet': [],
               'coe_angles': [],
@@ -93,10 +92,8 @@ if __name__ == "__main__":
         scores['energy'].append(np.mean(energy))
         
         var_scorer = VarianceScore(all_hs[idx], which='mean')
-        dissim = var_scorer.pairwise_dissimilarities()
         var = var_scorer.circ_variance()
         covdet = var_scorer.covdet()
-        scores['pairwise_dissimilarity'].append(np.mean(dissim))
         scores['circ_variance'].append(-np.mean(var))
         scores['covdet'].append(-np.mean(covdet))
         
@@ -161,11 +158,10 @@ if __name__ == "__main__":
         for idx in range(len(all_hs)):
             output_scorer = OutputScore(all_logits[idx], per_token=True)
             entropy = output_scorer.compute_entropy()
-            var_scorer = VarianceScore(all_hs[idx], which='per_token', weights=None)
+            var_scorer = VarianceScore(all_hs[idx], which='per_token')
             var = var_scorer.circ_variance()
             covdet = var_scorer.covdet()
-            emp_cov = var_scorer.emp_cov()
-            token_vars.append(np.asarray((var, covdet, emp_cov, entropy)))
+            token_vars.append(np.asarray((var, covdet, entropy)))
         with open(os.path.join(out_dir, f"hsPCA.pkl"), "wb") as f:
             pickle.dump(hs_pca, f)
         with open(os.path.join(out_dir, f"tokenDict.pkl"), "wb") as f:

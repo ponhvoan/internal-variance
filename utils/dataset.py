@@ -177,6 +177,7 @@ def prepare_dataset(dataset_name, subdataset):
     if dataset_name == 'true_false':
         dataset = load_dataset('csv', data_files=f'data/true_false_data/{subdataset}.csv')['train']
         dataset = dataset.rename_columns({'statement': 'question', 'label': 'answer'})
+        dataset = dataset.shuffle(seed=42).select(range(1000))
     elif dataset_name == 'mmlu':
         dataset = load_dataset('cais/mmlu', 'all', split='validation')
     elif dataset_name == 'gsm':
@@ -189,7 +190,6 @@ def prepare_dataset(dataset_name, subdataset):
     elif dataset_name == 'math':
         dataset = load_dataset('json', data_files='data/math.jsonl')['train']
         dataset = dataset.shuffle(seed=42).select(range(1000))
-        # dataset = dataset.train_test_split(test_size=0.2, seed=42)['test']
         dataset = dataset.rename_column('en', 'question')
     elif dataset_name == 'fever':
         dataset = load_dataset('fever', 'v1.0', trust_remote_code=True)
@@ -343,7 +343,7 @@ def append_answer(labels, gen_ans, gt, dataset_name):
 
 def extract_labels(dataset_name, gen_ans, ref_ans):
     if dataset_name in ['true_false', 'fever', 'mmlu', 'medmcqa', 'commonsenseqa']:
-       gen_ans = [1 if 'true' in label.lower() else 0 for label in gen_ans]
+    #    gen_ans = [1 if 'true' in label.lower() else 0 for label in gen_ans]
        labels = [0 if ans==ref else 1 for ans, ref in zip(gen_ans, ref_ans)]
 
     elif dataset_name == 'gsm':
